@@ -4,17 +4,20 @@ import sys
 import json
 import base64
 import firebase_admin
-from firebase_admin import credentials, firestore, auth
+from firebase_admin import credentials, firestore
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import pandas as pd
 
 load_dotenv()
 
-app = FastAPI(title="Backend IA Superviseur (Serverless Vercel)")
+app = FastAPI(
+    title="Backend IA Superviseur",
+    description="Microservice IA pour la génération intelligente de questionnaires d'audit et recommandations stratégiques",
+    version="2.0.0"
+)
 
-# Middleware pour restaurer le chemin d'URL d'origine sous Vercel Serverless
+# Middleware pour restaurer le chemin d'URL sous Vercel Serverless
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 class VercelPathMiddleware:
@@ -55,7 +58,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ==================== INITIALISATION ROBUSTE GEMINI ====================
+# ==================== INITIALISATION GEMINI AI ====================
 gemini_client = None
 gemini_error = None
 gemini_api_key = os.environ.get("GEMINI_API_KEY")
@@ -64,15 +67,15 @@ if gemini_api_key:
     try:
         from google import genai
         gemini_client = genai.Client(api_key=gemini_api_key)
-        print("✅ Gemini AI initialisé")
+        print("✅ Gemini AI initialisé avec succès")
     except Exception as e:
         gemini_error = str(e)
         print(f"⚠️ Erreur initialisation Gemini : {e}")
 else:
-    gemini_error = "GEMINI_API_KEY manquante dans les variables d'environnement Vercel"
-    print("⚠️ GEMINI_API_KEY non configurée")
+    gemini_error = "GEMINI_API_KEY non configurée"
+    print("⚠️ GEMINI_API_KEY non configurée dans l'environnement")
 
-# ==================== INITIALISATION ROBUSTE FIREBASE ====================
+# ==================== INITIALISATION FIREBASE ====================
 db = None
 firebase_error = None
 
@@ -87,18 +90,15 @@ def init_firebase():
 
     firebase_credentials = None
 
-    # 1. Depuis variable FIREBASE_SA_JSON (Vercel)
     sa_json = os.environ.get("FIREBASE_SA_JSON")
     if sa_json:
         try:
-            # Nettoyage si encodé en base64 ou chaîne JSON
             if sa_json.startswith("ey"):  # Base64 pattern
                 sa_json = base64.b64decode(sa_json).decode("utf-8")
             firebase_credentials = json.loads(sa_json)
         except Exception as e:
             print(f"⚠️ Erreur parsing FIREBASE_SA_JSON : {e}")
 
-    # 2. Depuis fichier local (développement)
     if not firebase_credentials:
         key_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "./firebase-key.json")
         if os.path.exists(key_path):
@@ -118,52 +118,242 @@ def init_firebase():
             firebase_error = str(e)
             print(f"⚠️ Erreur init Firebase Admin : {e}")
     else:
-        firebase_error = "Aucune clé Firebase trouvée (variable FIREBASE_SA_JSON ou fichier local)"
-        print("⚠️ Firebase non initialisé (clé manquante)")
+        firebase_error = "Aucune clé Firebase trouvée"
 
     return db
 
-# Initialisation au démarrage
 try:
     init_firebase()
 except Exception as e:
     firebase_error = str(e)
 
-# ==================== UTILITAIRES ====================
-def extraire_notes(reponses: dict) -> list:
-    return [
-        v for v in (reponses or {}).values()
-        if isinstance(v, int) and not isinstance(v, bool)
-    ]
 
-async def obtenir_conseil_gemini(moyenne: float) -> str:
+# ==================== MOTEUR DE GÉNÉRATION INTELLIGENTE ====================
+
+def generer_questions_fallback(payload: dict) -> dict:
+    """Générateur déterministe de secours selon les données de la mission."""
+    marque = payload.get("marque", "Marque")
+    rayon = payload.get("rayon", "Linéaire")
+    magasin = payload.get("magasin", "Point de Vente")
+    consignes = payload.get("consignes", "")
+    familles = payload.get("familles", ["Gamme Principale"])
+    produits = payload.get("produits", [])
+
+    questions = []
+    q_num = 1
+
+    # NIVEAU 1 : LINÉAIRE & RAYON GLOBAL
+    questions.extend([
+        {
+            "id": f"q{q_num}_proprete",
+            "label": f"{q_num}. Le linéaire {rayon} est-il propre et correctement tenu ?",
+            "type": "oui_non",
+            "required": True,
+            "options": []
+        },
+        {
+            "id": f"q{q_num+1}_planogramme",
+            "label": f"{q_num+1}. Le planogramme {marque} est-il respecté ?",
+            "type": "oui_non",
+            "required": True,
+            "options": []
+        },
+        {
+            "id": f"q{q_num+2}_balisage",
+            "label": f"{q_num+2}. Le balisage prix {marque} est-il présent et lisible ?",
+            "type": "oui_non",
+            "required": True,
+            "options": []
+        },
+        {
+            "id": f"q{q_num+3}_gondole",
+            "label": f"{q_num+3}. La marque {marque} est-elle visible en tête de gondole ou zone promo ?",
+            "type": "oui_non",
+            "required": True,
+            "options": []
+        },
+        {
+            "id": f"q{q_num+4}_assortiment",
+            "label": f"{q_num+4}. L'assortiment global {rayon} correspond-il aux accords commerciaux ?",
+            "type": "oui_non",
+            "required": True,
+            "options": []
+        },
+        {
+            "id": f"q{q_num+5}_photo",
+            "label": f"{q_num+5}. Photo panoramique d’ensemble du linéaire {marque}",
+            "type": "photo",
+            "required": True,
+            "options": []
+        },
+        {
+            "id": f"q{q_num+6}_note",
+            "label": f"{q_num+6}. Note globale de visibilité et d’impact visuel du linéaire (1 à 5)",
+            "type": "note",
+            "required": True,
+            "options": []
+        }
+    ])
+    q_num += 7
+
+    # NIVEAU 2 : PAR FAMILLE DE PRODUITS
+    for fam in familles:
+        fam_prods = [
+            p for p in produits 
+            if isinstance(p, dict) and fam.lower() in (p.get("categorie") or p.get("famille") or "").lower()
+        ]
+        
+        prod_names = [p.get("nom") or p.get("titre") for p in fam_prods if p.get("nom") or p.get("titre")]
+        
+        # Formater les cibles prix
+        price_targets = [
+            f"{p.get('nom') or 'Produit'} = {p.get('prix_conseille') or p.get('prix')} Ar"
+            for p in fam_prods if p.get("prix_conseille") or p.get("prix")
+        ]
+        price_suffix = f" (Vérifier : {' ; '.join(price_targets)})" if price_targets else ""
+
+        # Formater la cible facing
+        facing_target = next((p.get("facing_cible") or p.get("facing") for p in fam_prods if p.get("facing_cible") or p.get("facing")), None)
+        facing_suffix = f" (Cible : {facing_target})" if facing_target else ""
+
+        clean_fam = fam.replace(" ", "_").lower()
+        questions.extend([
+            {
+                "id": f"q{q_num}_fam_{clean_fam}_presence",
+                "label": f"{q_num}. [Famille {fam}] Toutes les références {marque} sont-elles présentes ?",
+                "type": "choix_multiple",
+                "required": True,
+                "options": ["Toutes (100% présentes)", "Partiellement (1 ou 2 manquantes)", "Aucune (Rupture totale)"]
+            },
+            {
+                "id": f"q{q_num+1}_fam_{clean_fam}_manquantes",
+                "label": f"{q_num+1}. [Famille {fam}] Si non, quelles références sont manquantes ? (Checklist MDM)",
+                "type": "choix_multiple",
+                "required": False,
+                "options": prod_names if prod_names else ["Référence 1", "Référence 2"]
+            },
+            {
+                "id": f"q{q_num+2}_fam_{clean_fam}_rupture",
+                "label": f"{q_num+2}. [Famille {fam}] Une rupture de stock est-elle constatée ?",
+                "type": "choix_multiple",
+                "required": True,
+                "options": ["Aucune", "1 référence", "2 références ou plus"]
+            },
+            {
+                "id": f"q{q_num+3}_fam_{clean_fam}_prix",
+                "label": f"{q_num+3}. [Famille {fam}] Le prix affiché est-il conforme au tarif conseillé ou promo ?{price_suffix}",
+                "type": "choix_multiple",
+                "required": True,
+                "options": ["Conforme", "Écart de prix constaté (surprix)", "Promotion non appliquée"]
+            },
+            {
+                "id": f"q{q_num+4}_fam_{clean_fam}_facing",
+                "label": f"{q_num+4}. [Famille {fam}] Le facing visible est-il suffisant ?{facing_suffix}",
+                "type": "choix_multiple",
+                "required": True,
+                "options": ["Suffisant (Conforme)", "Insuffisant (Sous-facing)"]
+            },
+            {
+                "id": f"q{q_num+5}_fam_{clean_fam}_promo",
+                "label": f"{q_num+5}. [Famille {fam}] Une opération promotionnelle est-elle visible en rayon ?",
+                "type": "oui_non",
+                "required": True,
+                "options": []
+            }
+        ])
+        q_num += 6
+
+    return {
+        "status": "ok",
+        "source": "heuristic_engine",
+        "titre": f"Audit Hybride - {magasin} ({marque})",
+        "description": consignes or f"Audit de conformité linéaire pour {marque} à {magasin}.",
+        "questions": questions,
+        "count": len(questions)
+    }
+
+
+async def generer_questions_gemini(payload: dict) -> dict:
+    """Génération par IA Gemini à partir du prompt/brief et des données de la mission."""
     if not gemini_client:
-        return generer_conseil_fallback(moyenne)
+        return generer_questions_fallback(payload)
+
+    marque = payload.get("marque", "Marque")
+    rayon = payload.get("rayon", "Linéaire")
+    magasin = payload.get("magasin", "Point de Vente")
+    consignes = payload.get("consignes", "Vérifier la visibilité, les prix et les facings.")
+    familles = payload.get("familles", ["Gamme Principale"])
+    produits = payload.get("produits", [])
+
+    system_prompt = (
+        "Tu es un expert en Trade Marketing, Merchandising Retail et Supervision de Réseaux de Distribution. "
+        "Ton rôle est de concevoir une fiche d'audit terrain ultra-précise et adaptée pour les enquêteurs mobiles in situ.\n\n"
+        "STRUCTURE DU QUESTIONNAIRE :\n"
+        "1. Niveau 1 (Linéaire / Rayon global) : Questions d'ambiance, propreté, planogramme, balisage, tête de gondole/zone promo, photo panoramique, note 1-5.\n"
+        "2. Niveau 2 (Par Famille de produits ciblée) : Pour chaque famille ciblée, génère le bloc de contrôle standardisé (Présence globale, Checklist références manquantes, Rupture constatée, Conformité Prix conseillés/promo, Facing suffisant vs Cible, Animation promotionnelle).\n"
+        "3. Inclus explicitement dans les libellés les cibles de prix conseillés et de facing fournies dans la liste des produits.\n"
+        "4. Prends en compte toutes les consignes spécifiques du brief (ex: tête de gondole, concurrence, promo).\n\n"
+        "FORMAT DE RÉPONSE OBLIGATOIRE :\n"
+        "Renvoie UNIQUEMENT un objet JSON valide avec cette structure sans texte superflu :\n"
+        "{\n"
+        "  \"titre\": \"Titre de la fiche\",\n"
+        "  \"description\": \"Description de la mission\",\n"
+        "  \"questions\": [\n"
+        "    {\n"
+        "      \"id\": \"q1_id_unique\",\n"
+        "      \"label\": \"1. Intitulé complet de la question\",\n"
+        "      \"type\": \"oui_non\" | \"choix_multiple\" | \"photo\" | \"note\" | \"texte\" | \"nombre\",\n"
+        "      \"required\": true,\n"
+        "      \"options\": [\"Option 1\", \"Option 2\"] (si choix_multiple, sinon tableau vide)\n"
+        "    }\n"
+        "  ]\n"
+        "}"
+    )
+
+    user_context = (
+        f"CONTEXTE DE LA MISSION :\n"
+        f"- Point de vente : {magasin}\n"
+        f"- Marque commanditaire : {marque}\n"
+        f"- Rayon / Secteur : {rayon}\n"
+        f"- Consignes & Objectifs du Fournisseur : \"{consignes}\"\n"
+        f"- Familles ciblées : {json.dumps(familles, ensure_ascii=False)}\n"
+        f"- Produits MDM du panier : {json.dumps(produits, ensure_ascii=False)}\n"
+    )
 
     model_names = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     for model_name in model_names:
         try:
             response = gemini_client.models.generate_content(
                 model=model_name,
-                contents=f"Donne un conseil d'optimisation en 20 mots maximum pour un magasin avec une note moyenne de {moyenne:.1f}/5. Sois précis et actionnable."
+                contents=f"{system_prompt}\n\n{user_context}"
             )
             if response and response.text:
-                return response.text.strip()
+                raw_text = response.text.strip()
+                if "```json" in raw_text:
+                    raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in raw_text:
+                    raw_text = raw_text.split("```")[1].split("```")[0].strip()
+
+                parsed = json.loads(raw_text)
+                if "questions" in parsed and isinstance(parsed["questions"], list) and len(parsed["questions"]) > 0:
+                    return {
+                        "status": "ok",
+                        "source": f"gemini_{model_name}",
+                        "titre": parsed.get("titre", f"Audit - {magasin} ({marque})"),
+                        "description": parsed.get("description", consignes),
+                        "questions": parsed["questions"],
+                        "count": len(parsed["questions"])
+                    }
         except Exception as e:
-            print(f"⚠️ Erreur avec modèle {model_name} : {e}")
+            print(f"⚠️ Erreur génération Gemini ({model_name}) : {e}")
             continue
 
-    return generer_conseil_fallback(moyenne)
+    return generer_questions_fallback(payload)
 
-def generer_conseil_fallback(moyenne: float) -> str:
-    if moyenne >= 4.5:
-        return "Excellent facing et disponibilité optimale. Maintenez le niveau de réassort actuel."
-    elif moyenne >= 3.5:
-        return "Disponibilité correcte. Priorisez le réassort des linéaires frais avant l'affluence de 10h."
-    elif moyenne >= 2.5:
-        return "Ruptures constatées en rayon. Vérifiez d'urgence les stocks en réserve et le balisage prix."
+
 async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
-    brand = payload.get("brand_name", "Socolait")
+    """Génération des 3 recommandations stratégiques exécutives."""
+    brand = payload.get("brand_name", "Chocolaterie Robert")
     ruptures = payload.get("top_ruptures", [])
     cat_stats = payload.get("categories_stats", {})
     enseignes = payload.get("enseignes_stats", {})
@@ -198,20 +388,26 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
                 print(f"⚠️ Erreur Gemini Strategic Advice ({model_name}): {e}")
                 continue
 
-    # Fallback heuristique intelligent
     return [
-        f"1. Logistique & Réapprovisionnement : Déployer en priorité un flux de réassort d'urgence sur les points de vente présentant des ruptures critiques, avec un passage hebdomadaire supplémentaire le vendredi matin.",
-        f"2. Négociation Enseignes : Organiser une revue de compte avec les enseignes sous le seuil de 80% de conformité facing pour demander le respect strict du planogramme contractuel.",
-        f"3. Arbitrage Budgétaire : Réallouer 25% du budget d'audit des zones conformes (>90%) vers les provinces à fort potentiel commercial afin de maximiser le retour sur investissement."
+        "1. Logistique & Réapprovisionnement : Déployer en priorité un flux de réassort d'urgence sur les points de vente présentant des ruptures critiques, avec un passage supplémentaire le vendredi matin.",
+        "2. Négociation Enseignes : Organiser une revue de compte avec les enseignes sous le seuil de 80% de conformité facing pour demander le respect strict du planogramme contractuel.",
+        "3. Arbitrage Budgétaire : Réallouer 25% du budget d'audit des zones conformes (>90%) vers les provinces à fort potentiel commercial afin de maximiser le retour sur investissement."
     ]
 
-# ==================== ENDPOINTS ====================
+
+# ==================== ENDPOINTS DE L'API ====================
+
 @app.get("/")
 @app.get("/api")
 async def root():
     return {
         "status": "online",
-        "service": "Microservice Python IA Superviseur (Serverless Vercel)",
+        "service": "Microservice IA Superviseur (Retail Intelligence)",
+        "version": "2.0.0",
+        "features": [
+            "Génération intelligente de fiches d'audit depuis brief/prompt mission (Gemini)",
+            "Synthèse exécutive & Recommandations stratégiques multi-réseaux"
+        ],
         "diagnostics": {
             "gemini_ready": gemini_client is not None,
             "gemini_error": gemini_error,
@@ -219,85 +415,33 @@ async def root():
             "firebase_error": firebase_error,
         },
         "endpoints": {
-            "swagger_docs": "/docs",
-            "health": "/health",
-            "post_reponses": "POST /reponses",
-            "post_strategic_advice": "POST /strategic-advice"
+            "generate_questions": "POST /api/generate-questions",
+            "strategic_advice": "POST /api/strategic-advice",
+            "health": "GET /api/health",
+            "docs": "/docs"
         }
     }
 
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"ok": True}
+    return {"ok": True, "gemini": gemini_client is not None}
 
-@app.post("/reponses")
-@app.post("/api/reponses")
-async def recevoir_reponse(payload: dict, authorization: str = Header(None)):
-    firestore_db = init_firebase()
-    if not firestore_db:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Service Firebase non disponible. Erreur: {firebase_error}"
-        )
-
+@app.post("/generate-questions")
+@app.post("/api/generate-questions")
+async def endpoint_generate_questions(payload: dict):
+    """Génération dynamique et intelligente d'un questionnaire d'audit par IA."""
     try:
-        reponse_id = payload.get("reponse_id")
-        magasin_id = payload.get("magasin_id")
-
-        if not reponse_id or not magasin_id:
-            raise HTTPException(status_code=400, detail="reponse_id et magasin_id sont obligatoires")
-
-        # Idempotence : vérifier si déjà traitée
-        existing = firestore_db.collection("reponses").document(reponse_id).get()
-        if existing.exists:
-            stats = firestore_db.collection("statistiques").document(magasin_id).get()
-            stats_data = stats.to_dict() if stats.exists else {}
-            return JSONResponse(status_code=409, content={
-                "status": "already_processed",
-                "moyenne": stats_data.get("moyenne", 0),
-                "conseil": stats_data.get("conseil_ia", ""),
-            })
-
-        # Sauvegarder la réponse
-        firestore_db.collection("reponses").document(reponse_id).set(payload)
-
-        # Calcul de la moyenne avec pandas
-        docs = list(firestore_db.collection("reponses").where("magasin_id", "==", magasin_id).stream())
-        total_reponses = len(docs)
-        toutes_les_notes = []
-        for d in docs:
-            toutes_les_notes.extend(extraire_notes(d.to_dict().get("reponses")))
-
-        df = pd.DataFrame({"note": toutes_les_notes})
-        moyenne = float(df["note"].mean()) if not df.empty else 0.0
-
-        # Obtenir le conseil IA
-        conseil = await obtenir_conseil_gemini(moyenne)
-
-        # Mettre à jour les statistiques
-        firestore_db.collection("statistiques").document(magasin_id).set({
-            "moyenne": moyenne,
-            "conseil_ia": conseil,
-            "total_reponses": total_reponses
-        }, merge=True)
-
-        return {
-            "status": "ok",
-            "moyenne": moyenne,
-            "conseil": conseil,
-            "total_reponses": total_reponses
-        }
-
-    except HTTPException:
-        raise
+        result = await generer_questions_gemini(payload or {})
+        return result
     except Exception as e:
-        print(f"❌ Erreur lors du traitement de la réponse : {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Erreur génération questions : {e}")
+        return generer_questions_fallback(payload or {})
 
 @app.api_route("/strategic-advice", methods=["GET", "POST", "OPTIONS"])
 @app.api_route("/api/strategic-advice", methods=["GET", "POST", "OPTIONS"])
-async def recommander_strategie(request: Request):
+async def endpoint_strategic_advice(request: Request):
+    """Génération de recommandations stratégiques consolidées par IA."""
     if request.method == "OPTIONS":
         return JSONResponse(status_code=200, content={"status": "ok"})
 
@@ -333,30 +477,19 @@ async def catch_all_dispatcher(request: Request, full_path: str):
 
     clean_path = full_path.lower().strip("/")
 
-    if "strategic" in clean_path:
-        return await recommander_strategie(request)
-
-    if "reponse" in clean_path:
+    if "generate" in clean_path or "question" in clean_path:
         body = {}
         try:
             body = await request.json()
         except Exception:
             pass
-        return await recevoir_reponse(body)
+        return await endpoint_generate_questions(body)
+
+    if "strategic" in clean_path:
+        return await endpoint_strategic_advice(request)
 
     if "health" in clean_path:
-        return {"ok": True}
-
-    if request.method == "POST":
-        try:
-            body = await request.json()
-            if "top_ruptures" in body or "brand_name" in body or "categories_stats" in body:
-                return await recommander_strategie(request)
-            if "reponse_id" in body or "magasin_id" in body:
-                return await recevoir_reponse(body)
-        except Exception:
-            pass
-        return await recommander_strategie(request)
+        return {"ok": True, "gemini": gemini_client is not None}
 
     return await root()
 
