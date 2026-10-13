@@ -368,7 +368,7 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
         f"- Performances régionales : {json.dumps(regions, ensure_ascii=False)}\n\n"
         "Génère exactement 3 recommandations stratégiques exécutives, concrètes et immédiatement actionnables "
         "numérotées 1, 2 et 3 :\n"
-        "1. Recommandation Logistique & Réassort (focus zones ou produits en rupture)\n"
+        "1. Recommandation Disponibilité & Visibilité Linéaire (focus zones ou produits en rupture)\n"
         "2. Recommandation Négociation Enseignes (focus facing, litiges ou pénalités de sous-performance)\n"
         "3. Recommandation Commerciale & Allocation Budgétaire (arbitrage des tournées et audit)"
     )
@@ -389,7 +389,7 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
                 continue
 
     return [
-        "1. Logistique & Réapprovisionnement : Déployer en priorité un flux de réassort d'urgence sur les points de vente présentant des ruptures critiques, avec un passage supplémentaire le vendredi matin.",
+        "1. Présence & Disponibilité en Rayon : Alerter les équipes commerciales sur les points de vente présentant des ruptures critiques afin de rétablir les facings avant le pic d'affluence du week-end.",
         "2. Négociation Enseignes : Organiser une revue de compte avec les enseignes sous le seuil de 80% de conformité facing pour demander le respect strict du planogramme contractuel.",
         "3. Arbitrage Budgétaire : Réallouer 25% du budget d'audit des zones conformes (>90%) vers les provinces à fort potentiel commercial afin de maximiser le retour sur investissement."
     ]
