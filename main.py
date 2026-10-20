@@ -491,10 +491,20 @@ async def root():
 async def health():
     return {"ok": True, "gemini": gemini_client is not None}
 
-@app.post("/generate-questions")
-@app.post("/api/generate-questions")
-async def endpoint_generate_questions(payload: dict):
+@app.api_route("/generate-questions", methods=["GET", "POST", "OPTIONS"])
+@app.api_route("/api/generate-questions", methods=["GET", "POST", "OPTIONS"])
+async def endpoint_generate_questions(request: Request):
     """Génération dynamique et intelligente d'un questionnaire d'audit par IA."""
+    if request.method == "OPTIONS":
+        return JSONResponse(status_code=200, content={"status": "ok"})
+
+    payload = {}
+    if request.method == "POST":
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
     try:
         result = await generer_questions_gemini(payload or {})
         return result
