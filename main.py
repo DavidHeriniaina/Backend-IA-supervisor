@@ -139,6 +139,70 @@ def generer_questions_fallback(payload: dict) -> dict:
     familles = payload.get("familles", ["Gamme Principale"])
     produits = payload.get("produits", [])
 
+    c_lower = consignes.lower()
+    is_targeted_price_clean = ("prix" in c_lower or "tarif" in c_lower) and ("propr" in c_lower or "tenu" in c_lower or "hygien" in c_lower)
+
+    if is_targeted_price_clean:
+        fam_target = familles[0] if familles else (rayon or "Pâtes à Tartiner")
+        first_prod = produits[0] if produits and isinstance(produits[0], dict) else {}
+        prod_nom = first_prod.get("nom") or first_prod.get("titre") or "Pâte à Tartiner Chocolat Robert Noisette 200g"
+        target_price = first_prod.get("prix_conseille") or first_prod.get("prix") or 7800
+        price_suffix = f" (Prix conseillé : {target_price} Ar)" if target_price else ""
+
+        questions = [
+            {
+                "id": "q1_proprete",
+                "label": f"1. Le linéaire {fam_target} est-il propre et bien entretenu ?",
+                "type": "oui_non",
+                "required": True,
+                "options": []
+            },
+            {
+                "id": "q2_note_proprete",
+                "label": "2. Note d’état général et de propreté du linéaire (1 à 5)",
+                "type": "note",
+                "required": True,
+                "options": []
+            },
+            {
+                "id": "q3_presence",
+                "label": f"3. La référence {prod_nom} est-elle présente en rayon (non rupture) ?",
+                "type": "oui_non",
+                "required": True,
+                "options": []
+            },
+            {
+                "id": "q4_balisage",
+                "label": f"4. Le balisage prix {marque} est-il présent et lisible ?",
+                "type": "oui_non",
+                "required": True,
+                "options": []
+            },
+            {
+                "id": "q5_prix_reel",
+                "label": f"5. Prix affiché constaté en rayon (en Ariary){price_suffix}",
+                "type": "nombre",
+                "required": True,
+                "options": []
+            },
+            {
+                "id": "q6_photo",
+                "label": f"6. Photo du produit avec son étiquette prix ({prod_nom})",
+                "type": "photo",
+                "required": True,
+                "options": []
+            }
+        ]
+
+        return {
+            "status": "ok",
+            "source": "heuristic_engine_targeted_price_clean",
+            "titre": f"Audit Ciblé : Prix & Propreté - {magasin} ({marque})",
+            "description": consignes or "Relevé de prix réel et contrôle de la propreté du linéaire.",
+            "questions": questions,
+            "count": len(questions)
+        }
+
     questions = []
     q_num = 1
 
@@ -289,8 +353,8 @@ async def generer_questions_gemini(payload: dict) -> dict:
         "Tu es un expert en Trade Marketing, Merchandising Retail et Supervision de Réseaux de Distribution. "
         "Ton rôle est de concevoir une fiche d'audit terrain ultra-précise et adaptée pour les enquêteurs mobiles in situ.\n\n"
         "STRUCTURE DU QUESTIONNAIRE :\n"
-        "1. Niveau 1 (Linéaire / Rayon global) : Questions d'ambiance, propreté, planogramme, balisage, tête de gondole/zone promo, photo panoramique, note 1-5.\n"
-        "2. Niveau 2 (Par Famille de produits ciblée) : Pour chaque famille ciblée, génère le bloc de contrôle standardisé (Présence globale, Checklist références manquantes, Rupture constatée, Conformité Prix conseillés/promo, Facing suffisant vs Cible, Animation promotionnelle).\n"
+        "1. RÈGLE D'ADAPTABILITÉ PRIORITAIRE : Analyse les consignes du brief. Si le brief demande un audit ciblé (ex: relevé de prix et propreté), génère un questionnaire percutant et direct (5 à 7 questions) axé exactement sur ces points : propreté (oui_non), note propreté (note 1-5), présence référence (oui_non), lisibilité balisage (oui_non), saisie du prix réel affiché en Ariary (type: 'nombre' obligatoire), photo de l'étiquette prix (type: 'photo'). Ne génère pas de questions hors-sujet.\n"
+        "2. Si le brief demande un audit général ou complet de rayon : applique la structure Hybride (Niveau 1 global rayon + Niveau 2 par famille).\n"
         "3. Inclus explicitement dans les libellés les cibles de prix conseillés et de facing fournies dans la liste des produits.\n"
         "4. Prends en compte toutes les consignes spécifiques du brief (ex: tête de gondole, concurrence, promo).\n\n"
         "FORMAT DE RÉPONSE OBLIGATOIRE :\n"
