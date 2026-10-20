@@ -143,11 +143,11 @@ def generer_questions_fallback(payload: dict) -> dict:
     is_targeted_price_clean = ("prix" in c_lower or "tarif" in c_lower) and ("propr" in c_lower or "tenu" in c_lower or "hygien" in c_lower)
 
     if is_targeted_price_clean:
-        fam_target = familles[0] if familles else (rayon or "Pâtes à Tartiner")
+        fam_target = familles[0] if familles else (rayon or "Linéaire")
         first_prod = produits[0] if produits and isinstance(produits[0], dict) else {}
-        prod_nom = first_prod.get("nom") or first_prod.get("titre") or "Pâte à Tartiner Chocolat Robert Noisette 200g"
-        target_price = first_prod.get("prix_conseille") or first_prod.get("prix") or 7800
-        price_suffix = f" (Prix conseillé : {target_price} Ar)" if target_price else ""
+        prod_nom = first_prod.get("nom") or first_prod.get("titre") or f"{marque} (Réf. Principale)"
+        target_price = first_prod.get("prix_conseille") or first_prod.get("prix")
+        price_suffix = f" (Tarif conseillé : {target_price} Ar)" if target_price else ""
 
         questions = [
             {
