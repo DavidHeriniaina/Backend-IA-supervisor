@@ -3,6 +3,13 @@ import os
 import sys
 import json
 import base64
+
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 import firebase_admin
 from firebase_admin import credentials, firestore
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -26,37 +33,40 @@ class VercelPathMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
-            # 1. Vérification query string __path__ injectée par vercel.json
-            qs = scope.get("query_string", b"").decode("utf-8", errors="ignore")
-            if "__path__=" in qs:
-                for part in qs.split("&"):
-                    if part.startswith("__path__="):
-                        extracted = part.split("=", 1)[1].split("?")[0]
-                        if extracted and extracted not in ["/main.py", "/index.py", "/api/index.py"]:
-                            scope["path"] = extracted
-                            break
+            current_path = scope.get("path", "")
+            # Restaurer le chemin réel uniquement s'il pointe vers un fichier serveur serverless ou s'il est vide
+            if current_path in ["/main.py", "/index.py", "/api/index.py", "/api/index", "/api", "", None]:
+                # 1. Vérification query string __path__ injectée par vercel.json
+                qs = scope.get("query_string", b"").decode("utf-8", errors="ignore")
+                path_set = False
+                if "__path__=" in qs:
+                    for part in qs.split("&"):
+                        if part.startswith("__path__="):
+                            extracted = part.split("=", 1)[1].split("?")[0].strip()
+                            if extracted and extracted not in ["/main.py", "/index.py", "/api/index.py", "/api"]:
+                                scope["path"] = extracted if extracted.startswith("/") else f"/{extracted}"
+                                path_set = True
+                                break
 
-            # 2. Vérification des headers Vercel proxy
-            headers = dict(scope.get("headers", []))
-            for header_name in [
-                b"x-matched-path",
-                b"x-forwarded-uri",
-                b"x-original-url",
-                b"x-rewrite-url",
-                b"x-invoke-path",
-                b"x-real-path",
-                b"x-vercel-path",
-                b"x-vercel-sc-path"
-            ]:
-                val = headers.get(header_name)
-                if val:
-                    try:
-                        raw = val.decode("utf-8").split("?")[0]
-                        if raw and raw not in ["/main.py", "/index.py", "/api/index.py"]:
-                            scope["path"] = raw
-                            break
-                    except Exception:
-                        pass
+                # 2. Vérification des headers Vercel proxy
+                if not path_set:
+                    headers = dict(scope.get("headers", []))
+                    for header_name in [
+                        b"x-matched-path",
+                        b"x-forwarded-uri",
+                        b"x-original-url",
+                        b"x-rewrite-url",
+                        b"x-real-path"
+                    ]:
+                        val = headers.get(header_name)
+                        if val:
+                            try:
+                                raw = val.decode("utf-8").split("?")[0].strip()
+                                if raw and raw not in ["/main.py", "/index.py", "/api/index.py", "/api/index", "/api"]:
+                                    scope["path"] = raw if raw.startswith("/") else f"/{raw}"
+                                    break
+                            except Exception:
+                                pass
         await self.app(scope, receive, send)
 
 app.add_middleware(VercelPathMiddleware)
@@ -396,7 +406,7 @@ async def generer_questions_gemini(payload: dict) -> dict:
         f"- Produits MDM du panier : {json.dumps(produits, ensure_ascii=False)}\n"
     )
 
-    model_names = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    model_names = ["gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-pro-latest"]
     for model_name in model_names:
         try:
             response = gemini_client.models.generate_content(
@@ -450,7 +460,7 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
     )
 
     if gemini_client:
-        model_names = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+        model_names = ["gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-pro-latest"]
         for model_name in model_names:
             try:
                 response = gemini_client.models.generate_content(
@@ -469,6 +479,39 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
         "2. Négociation Enseignes : Organiser une revue de compte avec les enseignes sous le seuil de 80% de conformité facing pour demander le respect strict du planogramme contractuel.",
         "3. Arbitrage Budgétaire : Réallouer 25% du budget d'audit des zones conformes (>90%) vers les provinces à fort potentiel commercial afin de maximiser le retour sur investissement."
     ]
+
+
+# ==================== LOGIQUE D'EXÉCUTION DES SERVICES ====================
+
+async def execute_generate_questions(payload: dict) -> JSONResponse:
+    """Exécute la génération de questions par Gemini avec fallback robuste."""
+    try:
+        result = await generer_questions_gemini(payload or {})
+        return JSONResponse(status_code=200, content=result)
+    except Exception as e:
+        print(f"❌ Erreur génération questions : {e}")
+        return JSONResponse(status_code=200, content=generer_questions_fallback(payload or {}))
+
+
+async def execute_strategic_advice(payload: dict) -> JSONResponse:
+    """Exécute la génération de recommandations stratégiques par Gemini avec fallback."""
+    try:
+        conseils = await obtenir_conseil_strategique_gemini(payload or {})
+        return JSONResponse(status_code=200, content={
+            "status": "ok",
+            "conseils": conseils,
+            "count": len(conseils)
+        })
+    except Exception as e:
+        print(f"❌ Erreur recommandation stratégique : {e}")
+        return JSONResponse(status_code=200, content={
+            "status": "fallback",
+            "conseils": [
+                "1. Logistique : Renforcer les livraisons du vendredi matin sur les hypermarchés cibles.",
+                "2. Négociation : Demander un plan de redressement de facing auprès des enseignes sous les 80%.",
+                "3. Budget : Rééquilibrer les budgets d'audit vers les zones en croissance."
+            ]
+        })
 
 
 # ==================== ENDPOINTS DE L'API ====================
@@ -498,6 +541,20 @@ async def root():
         }
     }
 
+@app.post("/")
+@app.post("/api")
+async def root_post(request: Request):
+    """Permet aux appels POST vers / ou /api d'exécuter la génération directement."""
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    if body.get("action") == "strategic-advice" or any(k in body for k in ["top_ruptures", "categories_stats", "enseignes_stats"]):
+        return await execute_strategic_advice(body)
+    return await execute_generate_questions(body)
+
 @app.get("/health")
 @app.get("/api/health")
 async def health():
@@ -505,60 +562,45 @@ async def health():
 
 @app.api_route("/generate-questions", methods=["GET", "POST", "OPTIONS"])
 @app.api_route("/api/generate-questions", methods=["GET", "POST", "OPTIONS"])
-async def endpoint_generate_questions(request_or_payload = None):
+async def endpoint_generate_questions(request: Request):
     """Génération dynamique et intelligente d'un questionnaire d'audit par IA."""
-    payload = {}
-    if request_or_payload is not None:
-        if isinstance(request_or_payload, dict):
-            payload = request_or_payload
-        elif hasattr(request_or_payload, "method"):
-            if request_or_payload.method == "OPTIONS":
-                return JSONResponse(status_code=200, content={"status": "ok"})
-            try:
-                payload = await request_or_payload.json()
-            except Exception:
-                payload = {}
+    if request.method == "OPTIONS":
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    if request.method == "GET":
+        return JSONResponse(status_code=200, content={
+            "status": "online",
+            "endpoint": "generate-questions",
+            "method": "POST required with mission payload to generate audit questionnaire"
+        })
 
+    payload = {}
     try:
-        result = await generer_questions_gemini(payload or {})
-        return JSONResponse(status_code=200, content=result)
-    except Exception as e:
-        print(f"❌ Erreur génération questions : {e}")
-        return JSONResponse(status_code=200, content=generer_questions_fallback(payload or {}))
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    return await execute_generate_questions(payload)
 
 @app.api_route("/strategic-advice", methods=["GET", "POST", "OPTIONS"])
 @app.api_route("/api/strategic-advice", methods=["GET", "POST", "OPTIONS"])
-async def endpoint_strategic_advice(request_or_payload = None):
+async def endpoint_strategic_advice(request: Request):
     """Génération de recommandations stratégiques consolidées par IA."""
-    payload = {}
-    if request_or_payload is not None:
-        if isinstance(request_or_payload, dict):
-            payload = request_or_payload
-        elif hasattr(request_or_payload, "method"):
-            if request_or_payload.method == "OPTIONS":
-                return JSONResponse(status_code=200, content={"status": "ok"})
-            try:
-                payload = await request_or_payload.json()
-            except Exception:
-                payload = {}
+    if request.method == "OPTIONS":
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    if request.method == "GET":
+        return JSONResponse(status_code=200, content={
+            "status": "online",
+            "endpoint": "strategic-advice",
+            "method": "POST required with retail analytics payload"
+        })
 
+    payload = {}
     try:
-        conseils = await obtenir_conseil_strategique_gemini(payload or {})
-        return JSONResponse(status_code=200, content={
-            "status": "ok",
-            "conseils": conseils,
-            "count": len(conseils)
-        })
-    except Exception as e:
-        print(f"❌ Erreur recommandation stratégique : {e}")
-        return JSONResponse(status_code=200, content={
-            "status": "fallback",
-            "conseils": [
-                "1. Logistique : Renforcer les livraisons du vendredi matin sur les hypermarchés cibles.",
-                "2. Négociation : Demander un plan de redressement de facing auprès des enseignes sous les 80%.",
-                "3. Budget : Rééquilibrer les budgets d'audit vers les zones en croissance."
-            ]
-        })
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    return await execute_strategic_advice(payload)
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"])
 async def catch_all_dispatcher(request: Request, full_path: str):
@@ -581,7 +623,6 @@ async def catch_all_dispatcher(request: Request, full_path: str):
         headers.get("x-original-url", "") or
         headers.get("x-forwarded-uri", "") or
         headers.get("x-matched-path", "") or
-        headers.get("x-invoke-path", "") or
         headers.get("referer", "")
     ).lower()
 
@@ -603,7 +644,7 @@ async def catch_all_dispatcher(request: Request, full_path: str):
     )
 
     if is_generate:
-        return await endpoint_generate_questions(body)
+        return await execute_generate_questions(body)
 
     # Détection Strategic Advice
     is_strategic = (
@@ -614,7 +655,7 @@ async def catch_all_dispatcher(request: Request, full_path: str):
     )
 
     if is_strategic:
-        return await endpoint_strategic_advice(body)
+        return await execute_strategic_advice(body)
 
     if "health" in combined_route:
         return JSONResponse(status_code=200, content={"ok": True, "gemini": gemini_client is not None})
