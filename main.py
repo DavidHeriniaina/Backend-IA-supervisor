@@ -26,6 +26,17 @@ class VercelPathMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
+            # 1. Vérification query string __path__ injectée par vercel.json
+            qs = scope.get("query_string", b"").decode("utf-8", errors="ignore")
+            if "__path__=" in qs:
+                for part in qs.split("&"):
+                    if part.startswith("__path__="):
+                        extracted = part.split("=", 1)[1].split("?")[0]
+                        if extracted and extracted not in ["/main.py", "/index.py", "/api/index.py"]:
+                            scope["path"] = extracted
+                            break
+
+            # 2. Vérification des headers Vercel proxy
             headers = dict(scope.get("headers", []))
             for header_name in [
                 b"x-matched-path",
@@ -34,7 +45,8 @@ class VercelPathMiddleware:
                 b"x-rewrite-url",
                 b"x-invoke-path",
                 b"x-real-path",
-                b"x-vercel-path"
+                b"x-vercel-path",
+                b"x-vercel-sc-path"
             ]:
                 val = headers.get(header_name)
                 if val:
@@ -384,7 +396,7 @@ async def generer_questions_gemini(payload: dict) -> dict:
         f"- Produits MDM du panier : {json.dumps(produits, ensure_ascii=False)}\n"
     )
 
-    model_names = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    model_names = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
     for model_name in model_names:
         try:
             response = gemini_client.models.generate_content(
@@ -438,7 +450,7 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
     )
 
     if gemini_client:
-        model_names = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        model_names = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
         for model_name in model_names:
             try:
                 response = gemini_client.models.generate_content(
@@ -493,77 +505,119 @@ async def health():
 
 @app.api_route("/generate-questions", methods=["GET", "POST", "OPTIONS"])
 @app.api_route("/api/generate-questions", methods=["GET", "POST", "OPTIONS"])
-async def endpoint_generate_questions(request: Request):
+async def endpoint_generate_questions(request_or_payload = None):
     """Génération dynamique et intelligente d'un questionnaire d'audit par IA."""
-    if request.method == "OPTIONS":
-        return JSONResponse(status_code=200, content={"status": "ok"})
-
     payload = {}
-    if request.method == "POST":
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
+    if request_or_payload is not None:
+        if isinstance(request_or_payload, dict):
+            payload = request_or_payload
+        elif hasattr(request_or_payload, "method"):
+            if request_or_payload.method == "OPTIONS":
+                return JSONResponse(status_code=200, content={"status": "ok"})
+            try:
+                payload = await request_or_payload.json()
+            except Exception:
+                payload = {}
 
     try:
         result = await generer_questions_gemini(payload or {})
-        return result
+        return JSONResponse(status_code=200, content=result)
     except Exception as e:
         print(f"❌ Erreur génération questions : {e}")
-        return generer_questions_fallback(payload or {})
+        return JSONResponse(status_code=200, content=generer_questions_fallback(payload or {}))
 
 @app.api_route("/strategic-advice", methods=["GET", "POST", "OPTIONS"])
 @app.api_route("/api/strategic-advice", methods=["GET", "POST", "OPTIONS"])
-async def endpoint_strategic_advice(request: Request):
+async def endpoint_strategic_advice(request_or_payload = None):
     """Génération de recommandations stratégiques consolidées par IA."""
-    if request.method == "OPTIONS":
-        return JSONResponse(status_code=200, content={"status": "ok"})
-
     payload = {}
-    if request.method == "POST":
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
+    if request_or_payload is not None:
+        if isinstance(request_or_payload, dict):
+            payload = request_or_payload
+        elif hasattr(request_or_payload, "method"):
+            if request_or_payload.method == "OPTIONS":
+                return JSONResponse(status_code=200, content={"status": "ok"})
+            try:
+                payload = await request_or_payload.json()
+            except Exception:
+                payload = {}
 
     try:
         conseils = await obtenir_conseil_strategique_gemini(payload or {})
-        return {
+        return JSONResponse(status_code=200, content={
             "status": "ok",
             "conseils": conseils,
             "count": len(conseils)
-        }
+        })
     except Exception as e:
         print(f"❌ Erreur recommandation stratégique : {e}")
-        return {
+        return JSONResponse(status_code=200, content={
             "status": "fallback",
             "conseils": [
                 "1. Logistique : Renforcer les livraisons du vendredi matin sur les hypermarchés cibles.",
                 "2. Négociation : Demander un plan de redressement de facing auprès des enseignes sous les 80%.",
                 "3. Budget : Rééquilibrer les budgets d'audit vers les zones en croissance."
             ]
-        }
+        })
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"])
 async def catch_all_dispatcher(request: Request, full_path: str):
     if request.method == "OPTIONS":
         return JSONResponse(status_code=200, content={"status": "ok"})
 
-    clean_path = full_path.lower().strip("/")
+    clean_path = (full_path or "").lower().strip("/")
 
-    if "generate" in clean_path or "question" in clean_path:
-        body = {}
+    path_param = (
+        request.query_params.get("__path__") or
+        request.query_params.get("path") or
+        request.query_params.get("endpoint") or
+        request.query_params.get("action") or
+        ""
+    ).lower()
+
+    headers = dict(request.headers)
+    action_hdr = headers.get("x-action", "").lower()
+    uri_hdr = (
+        headers.get("x-original-url", "") or
+        headers.get("x-forwarded-uri", "") or
+        headers.get("x-matched-path", "") or
+        headers.get("x-invoke-path", "") or
+        headers.get("referer", "")
+    ).lower()
+
+    combined_route = f"{clean_path} {path_param} {action_hdr} {uri_hdr}"
+
+    body = {}
+    if request.method in ["POST", "PUT", "PATCH"]:
         try:
             body = await request.json()
         except Exception:
-            pass
+            body = {}
+
+    # Détection Question Generation
+    is_generate = (
+        "generate" in combined_route or
+        "question" in combined_route or
+        body.get("action") == "generate-questions" or
+        any(k in body for k in ["consignes", "questions", "familles", "produits", "magasin", "rayon", "marque"])
+    )
+
+    if is_generate:
         return await endpoint_generate_questions(body)
 
-    if "strategic" in clean_path:
-        return await endpoint_strategic_advice(request)
+    # Détection Strategic Advice
+    is_strategic = (
+        "strategic" in combined_route or
+        "conseil" in combined_route or
+        body.get("action") == "strategic-advice" or
+        any(k in body for k in ["top_ruptures", "categories_stats", "enseignes_stats", "regions_stats", "brand_name"])
+    )
 
-    if "health" in clean_path:
-        return {"ok": True, "gemini": gemini_client is not None}
+    if is_strategic:
+        return await endpoint_strategic_advice(body)
+
+    if "health" in combined_route:
+        return JSONResponse(status_code=200, content={"ok": True, "gemini": gemini_client is not None})
 
     return await root()
 
