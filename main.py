@@ -359,38 +359,45 @@ Pour conditionner une question : "show_if": {"question_id": "<id source>", "equa
         f"- Produits MDM du panier : {json.dumps(produits, ensure_ascii=False)}\n"
     )
 
-    # Utilisation exclusive de Gemini Pro
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
-    try:
-        from google.genai import types
-        response = gemini_client.models.generate_content(
-            model=model_name,
-            contents=f"{system_prompt}\n\n{user_context}",
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        if response and response.text:
-            raw_text = response.text.strip()
-            # Sécurité : retire d'éventuelles clôtures markdown
-            if "```json" in raw_text:
-                raw_text = raw_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in raw_text:
-                raw_text = raw_text.split("```")[1].split("```")[0].strip()
+    # Modèles Gemini Flash (priorité gemini-3.8-flash, puis 3.5-flash-lite)
+    candidate_models = [
+        os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
+        "gemini-3.5-flash-lite",
+        "gemini-flash-latest"
+    ]
+    candidate_models = list(dict.fromkeys(candidate_models))
 
-            parsed = json.loads(raw_text)
-            questions = valider_questions(parsed.get("questions") if isinstance(parsed, dict) else None)
-            if questions:
-                return {
-                    "status": "ok",
-                    "source": f"gemini_{model_name}",
-                    "generated_by": "ai",
-                    "model": model_name,
-                    "titre": parsed.get("titre", f"Audit - {magasin} ({marque})"),
-                    "description": parsed.get("description", consignes),
-                    "questions": questions,
-                    "count": len(questions)
-                }
-    except Exception as e:
-        print(f"⚠️ Erreur génération Gemini Pro ({model_name}) : {e}")
+    for model_name in candidate_models:
+        try:
+            from google.genai import types
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=f"{system_prompt}\n\n{user_context}",
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            if response and response.text:
+                raw_text = response.text.strip()
+                # Sécurité : retire d'éventuelles clôtures markdown
+                if "```json" in raw_text:
+                    raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in raw_text:
+                    raw_text = raw_text.split("```")[1].split("```")[0].strip()
+
+                parsed = json.loads(raw_text)
+                questions = valider_questions(parsed.get("questions") if isinstance(parsed, dict) else None)
+                if questions:
+                    return {
+                        "status": "ok",
+                        "source": f"gemini_{model_name}",
+                        "generated_by": "ai",
+                        "model": model_name,
+                        "titre": parsed.get("titre", f"Audit - {magasin} ({marque})"),
+                        "description": parsed.get("description", consignes),
+                        "questions": questions,
+                        "count": len(questions)
+                    }
+        except Exception as e:
+            print(f"⚠️ Erreur avec le modèle {model_name} : {e}")
 
     return generer_questions_fallback(payload)
 
@@ -418,18 +425,23 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
     )
 
     if gemini_client:
-        # Utilisation exclusive de Gemini Pro
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
-        try:
-            response = gemini_client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
-            if response and response.text:
-                lines = [line.strip() for line in response.text.split("\n") if line.strip()]
-                return lines if len(lines) >= 3 else [response.text.strip()]
-        except Exception as e:
-            print(f"⚠️ Erreur Gemini Pro Strategic Advice ({model_name}): {e}")
+        candidate_models = [
+            os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
+            "gemini-3.5-flash-lite",
+            "gemini-flash-latest"
+        ]
+        candidate_models = list(dict.fromkeys(candidate_models))
+        for model_name in candidate_models:
+            try:
+                response = gemini_client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                if response and response.text:
+                    lines = [line.strip() for line in response.text.split("\n") if line.strip()]
+                    return lines if len(lines) >= 3 else [response.text.strip()]
+            except Exception as e:
+                print(f"⚠️ Erreur Gemini Strategic Advice ({model_name}): {e}")
 
     return [
         "1. Présence & Disponibilité en Rayon : Alerter les équipes commerciales sur les points de vente présentant des ruptures critiques afin de rétablir les facings avant le pic d'affluence du week-end.",
