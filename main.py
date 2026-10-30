@@ -320,14 +320,17 @@ NIVEAU 1 - VISION GLOBALE DU RAYON
 - Elles évaluent l'état général du linéaire : propreté, respect du planogramme, balisage, visibilité de la marque.
 - Elles ne dépendent d'aucune condition (show_if = null).
 
-NIVEAU 2 - RELEVÉ CIBLÉ (produit principal du brief, sinon famille ciblée)
-- 3 à 4 questions spécifiques, qui couvrent obligatoirement :
-  a) Disponibilité (rupture de stock) : oui_non ; nom du produit et EAN dans le libellé si connus.
+NIVEAU 2 - RELEVÉ CIBLÉ SUR LES PRODUITS DU BRIEF
+- Si plusieurs produits sont fournis dans "produits", génère impérativement les questions de disponibilité, prix et facing pour CHACUN d'eux (dans la limite de 12 à 14 questions au total pour l'ensemble du questionnaire).
+- Pour chaque produit ciblé :
+  a) Disponibilité (rupture de stock) : type oui_non ; inclus obligatoirement le nom exact du produit et l'EAN dans le libellé s'ils sont fournis.
   b) Écart de prix : type nombre, prix affiché en Ar ; rappelle le prix conseillé s'il est fourni.
   c) Exécution : nombre de facings (type nombre, rappelle la cible si fournie) ou présence en tête de gondole.
-  d) Une photo de preuve (type photo) avec une consigne claire : "à 1,5-2 m, sans zoom, produit et étiquette prix lisibles".
-- b) et c) ne s'appliquent que si le produit est présent : show_if = {"question_id": <id de la question de disponibilité>, "equals": "Oui"}.
-- Si le brief demande explicitement un contrôle supplémentaire (DLC, opercule, concurrent voisin...), tu peux dépasser 4 questions, au maximum 6 en niveau 2.
+  d) Une photo de preuve (type photo) avec une consigne claire : "à 1,5-2 m, sans zoom, produit ou emplacement vide et étiquette prix lisibles".
+- ATTENTION CONDITIONNALITÉ :
+  * b) et c) s'appliquent UNIQUEMENT si le produit correspondant est présent : show_if = {"question_id": <id disponibilité>, "equals": "Oui"}.
+  * La photo de preuve (d) DOIT ÊTRE OBLIGATOIREMENT TOUJOURS AFFICHÉE (show_if: null) : elle sert de preuve du facing si le produit est présent, OU de preuve irréfutable du trou/linéaire vide en cas de rupture de stock.
+- Si le brief demande un contrôle supplémentaire (DLC, opercule, etc.), ajoute-le avec condition de présence.
 
 RÈGLES GÉNÉRALES
 - Un libellé = une seule idée. Pas de question double.
@@ -356,39 +359,38 @@ Pour conditionner une question : "show_if": {"question_id": "<id source>", "equa
         f"- Produits MDM du panier : {json.dumps(produits, ensure_ascii=False)}\n"
     )
 
-    model_names = ["gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-pro-latest"]
-    for model_name in model_names:
-        try:
-            from google.genai import types
-            response = gemini_client.models.generate_content(
-                model=model_name,
-                contents=f"{system_prompt}\n\n{user_context}",
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
-            )
-            if response and response.text:
-                raw_text = response.text.strip()
-                # Sécurité : retire d'éventuelles clôtures markdown
-                if "```json" in raw_text:
-                    raw_text = raw_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in raw_text:
-                    raw_text = raw_text.split("```")[1].split("```")[0].strip()
+    # Utilisation exclusive de Gemini Pro
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
+    try:
+        from google.genai import types
+        response = gemini_client.models.generate_content(
+            model=model_name,
+            contents=f"{system_prompt}\n\n{user_context}",
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        if response and response.text:
+            raw_text = response.text.strip()
+            # Sécurité : retire d'éventuelles clôtures markdown
+            if "```json" in raw_text:
+                raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw_text:
+                raw_text = raw_text.split("```")[1].split("```")[0].strip()
 
-                parsed = json.loads(raw_text)
-                questions = valider_questions(parsed.get("questions") if isinstance(parsed, dict) else None)
-                if questions:
-                    return {
-                        "status": "ok",
-                        "source": f"gemini_{model_name}",
-                        "generated_by": "ai",
-                        "model": model_name,
-                        "titre": parsed.get("titre", f"Audit - {magasin} ({marque})"),
-                        "description": parsed.get("description", consignes),
-                        "questions": questions,
-                        "count": len(questions)
-                    }
-        except Exception as e:
-            print(f"⚠️ Erreur génération Gemini ({model_name}) : {e}")
-            continue
+            parsed = json.loads(raw_text)
+            questions = valider_questions(parsed.get("questions") if isinstance(parsed, dict) else None)
+            if questions:
+                return {
+                    "status": "ok",
+                    "source": f"gemini_{model_name}",
+                    "generated_by": "ai",
+                    "model": model_name,
+                    "titre": parsed.get("titre", f"Audit - {magasin} ({marque})"),
+                    "description": parsed.get("description", consignes),
+                    "questions": questions,
+                    "count": len(questions)
+                }
+    except Exception as e:
+        print(f"⚠️ Erreur génération Gemini Pro ({model_name}) : {e}")
 
     return generer_questions_fallback(payload)
 
@@ -416,19 +418,18 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
     )
 
     if gemini_client:
-        model_names = ["gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-pro-latest"]
-        for model_name in model_names:
-            try:
-                response = gemini_client.models.generate_content(
-                    model=model_name,
-                    contents=prompt
-                )
-                if response and response.text:
-                    lines = [line.strip() for line in response.text.split("\n") if line.strip()]
-                    return lines if len(lines) >= 3 else [response.text.strip()]
-            except Exception as e:
-                print(f"⚠️ Erreur Gemini Strategic Advice ({model_name}): {e}")
-                continue
+        # Utilisation exclusive de Gemini Pro
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-3.1-pro")
+        try:
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            if response and response.text:
+                lines = [line.strip() for line in response.text.split("\n") if line.strip()]
+                return lines if len(lines) >= 3 else [response.text.strip()]
+        except Exception as e:
+            print(f"⚠️ Erreur Gemini Pro Strategic Advice ({model_name}): {e}")
 
     return [
         "1. Présence & Disponibilité en Rayon : Alerter les équipes commerciales sur les points de vente présentant des ruptures critiques afin de rétablir les facings avant le pic d'affluence du week-end.",
