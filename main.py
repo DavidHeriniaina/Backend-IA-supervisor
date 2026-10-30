@@ -360,7 +360,7 @@ Pour conditionner une question : "show_if": {"question_id": "<id source>", "equa
     )
 
     # Utilisation exclusive de Gemini Pro
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.1-pro")
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
     try:
         from google.genai import types
         response = gemini_client.models.generate_content(
@@ -419,7 +419,7 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
 
     if gemini_client:
         # Utilisation exclusive de Gemini Pro
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-3.1-pro")
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
         try:
             response = gemini_client.models.generate_content(
                 model=model_name,
