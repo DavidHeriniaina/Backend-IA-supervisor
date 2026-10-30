@@ -359,10 +359,10 @@ Pour conditionner une question : "show_if": {"question_id": "<id source>", "equa
         f"- Produits MDM du panier : {json.dumps(produits, ensure_ascii=False)}\n"
     )
 
-    # Modèles Gemini Flash (priorité gemini-3.8-flash, puis 3.5-flash-lite)
+    # Modèles Gemini Flash (priorité gemini-3.5-flash-lite, ultra-rapide et stable)
     candidate_models = [
-        os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
-        "gemini-3.5-flash-lite",
+        os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+        "gemini-3.5-flash",
         "gemini-flash-latest"
     ]
     candidate_models = list(dict.fromkeys(candidate_models))
@@ -426,8 +426,8 @@ async def obtenir_conseil_strategique_gemini(payload: dict) -> list:
 
     if gemini_client:
         candidate_models = [
-            os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
-            "gemini-3.5-flash-lite",
+            os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+            "gemini-3.5-flash",
             "gemini-flash-latest"
         ]
         candidate_models = list(dict.fromkeys(candidate_models))
